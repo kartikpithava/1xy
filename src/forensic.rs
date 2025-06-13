@@ -11,18 +11,12 @@ use rand::Rng;
 /// File timestamp management for forensic invisibility
 pub struct TimestampManager {
     preserve_access_time: bool,
-    operator: String,
-    last_operation: DateTime<Utc>,
 }
 
 impl TimestampManager {
     pub fn new() -> Self {
         Self {
             preserve_access_time: true,
-            operator: "kartikpithava".to_string(), // Using provided user context
-            last_operation: DateTime::parse_from_rfc3339("2025-06-13T16:38:37Z")
-                .unwrap()
-                .with_timezone(&Utc),
         }
     }
     
@@ -44,7 +38,10 @@ impl TimestampManager {
             })?;
         
         if !self.preserve_access_time {
-            set_file_atime(path, file_time)
+            let access_offset = rand::thread_rng().gen_range(-86400..86400); // ±1 day
+            let access_time = FileTime::from_unix_time(timestamp + access_offset, 0);
+            
+            set_file_atime(path, access_time)
                 .map_err(|e| ForensicError::FileSystemError {
                     operation: format!("Failed to set access time: {}", e),
                 })?;
@@ -109,37 +106,35 @@ pub struct FileTimestamps {
     pub created: Option<std::time::SystemTime>,
 }
 
-/// Forensic cleaning utilities
-pub struct ForensicCleaner {
-    operator: String,
-    operation_time: DateTime<Utc>,
-}
+/// Anti-forensic cleaning utilities
+pub struct ForensicCleaner;
 
 impl ForensicCleaner {
     pub fn new() -> Self {
-        Self {
-            operator: "kartikpithava".to_string(),
-            operation_time: DateTime::parse_from_rfc3339("2025-06-13T16:38:37Z")
-                .unwrap()
-                .with_timezone(&Utc),
-        }
+        Self
     }
     
-    /// Remove forensic traces from file system
-    pub fn clean_temporary_files() -> Result<()> {
+    /// Remove all forensic traces from filesystem
+    pub fn clean_traces() -> Result<()> {
         let temp_patterns = [
-            "temp_*",
-            "clone_*",
-            "extraction_*.json",
-            "debug_*.txt",
-            "forensic_*.txt",
+            "*.tmp",
+            "*.temp",
+            "~*",
+            "*.bak",
+            ".*.swp",
+            "*.log",
+            "*.cache",
+            "._*",          // MacOS metadata
+            ".DS_Store",    // MacOS system files
+            "Thumbs.db",    // Windows thumbnail cache
+            "desktop.ini",  // Windows folder settings
         ];
         
         for pattern in &temp_patterns {
             if let Ok(entries) = glob::glob(pattern) {
                 for entry in entries {
                     if let Ok(path) = entry {
-                        let _ = fs::remove_file(path);
+                        Self::secure_delete(&path)?;
                     }
                 }
             }
@@ -147,30 +142,89 @@ impl ForensicCleaner {
         
         Ok(())
     }
-    
-    /// Secure memory cleanup (overwrite sensitive data)
-    pub fn secure_memory_cleanup(sensitive_data: &mut [u8]) {
-        let mut rng = rand::thread_rng();
-        
-        // First pass: random data
-        for byte in sensitive_data.iter_mut() {
-            *byte = rng.gen();
+
+    /// Securely delete a file by overwriting with random data before removal
+    fn secure_delete<P: AsRef<Path>>(path: P) -> Result<()> {
+        let path = path.as_ref();
+        if path.exists() {
+            let file_size = fs::metadata(path)
+                .map_err(|e| ForensicError::FileSystemError {
+                    operation: format!("Failed to get file size: {}", e),
+                })?.len();
+
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .map_err(|e| ForensicError::FileSystemError {
+                    operation: format!("Failed to open file for secure deletion: {}", e),
+                })?;
+
+            let mut rng = rand::thread_rng();
+            let mut buffer = vec![0u8; 8192];
+
+            // Multiple overwrite passes
+            for _ in 0..3 {
+                // Random data pass
+                for chunk in buffer.chunks_mut(8192) {
+                    rng.fill(chunk);
+                }
+                std::io::copy(&mut buffer.as_slice(), &mut file)
+                    .map_err(|e| ForensicError::FileSystemError {
+                        operation: format!("Failed to overwrite file: {}", e),
+                    })?;
+                
+                // Zero pass
+                buffer.fill(0);
+                std::io::copy(&mut buffer.as_slice(), &mut file)
+                    .map_err(|e| ForensicError::FileSystemError {
+                        operation: format!("Failed to overwrite file: {}", e),
+                    })?;
+            }
         }
-        
-        // Second pass: zeros
-        for byte in sensitive_data.iter_mut() {
-            *byte = 0;
-        }
+
+        fs::remove_file(path).map_err(|e| ForensicError::FileSystemError {
+            operation: format!("Failed to delete file: {}", e),
+        })?;
+
+        Ok(())
     }
-    
-    /// Generate authentic-looking creation timestamp
-    pub fn generate_authentic_timestamp() -> String {
+
+    /// Clean metadata from document
+    pub fn clean_metadata(data: &mut Vec<u8>) -> Result<()> {
+        let patterns = [
+            b"xap:CreatorTool",
+            b"xap:ModifyDate",
+            b"xap:CreateDate",
+            b"pdf:Producer",
+            b"dc:creator",
+            b"dc:date",
+            b"xmpMM:DocumentID",
+            b"xmpMM:InstanceID",
+            b"pdfaid:part",
+            b"pdfaid:conformance",
+            b"pdf:Keywords",
+            b"xmp:CreateDate",
+            b"xmp:ModifyDate",
+            b"xmp:MetadataDate",
+        ];
+
+        for pattern in &patterns {
+            while let Some(pos) = find_pattern(data, pattern) {
+                remove_metadata_field(data, pos);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate plausible past timestamp
+    pub fn generate_plausible_timestamp() -> String {
         let now = Utc::now();
-        let random_days = rand::thread_rng().gen_range(1..=30);
-        let creation_time = now - chrono::Duration::days(random_days);
-        creation_time.to_rfc3339()
+        let random_days = rand::thread_rng().gen_range(30..60);
+        let plausible_time = now - chrono::Duration::days(random_days);
+        plausible_time.to_rfc3339()
     }
-    
+
     /// Validate timestamp authenticity
     pub fn validate_timestamp_authenticity(timestamp: &str) -> Result<bool> {
         let datetime = DateTime::parse_from_rfc3339(timestamp)
@@ -179,16 +233,40 @@ impl ForensicCleaner {
         let now = Utc::now();
         let age = now.signed_duration_since(datetime.with_timezone(&Utc));
         
-        // Valid if in the past but not too old (within 5 years)
         let days_old = age.num_days();
-        Ok(days_old > 0 && days_old < 1826)
+        Ok(days_old > 0 && days_old < 1826) // 5 years = ~1826 days
+    }
+}
+
+// Helper function to find pattern in byte array
+fn find_pattern(data: &[u8], pattern: &[u8]) -> Option<usize> {
+    data.windows(pattern.len())
+        .position(|window| window == pattern)
+}
+
+// Helper function to remove metadata field and its value
+fn remove_metadata_field(data: &mut Vec<u8>, start_pos: usize) {
+    let mut end_pos = start_pos;
+    let mut depth = 0;
+    
+    // Find the end of the metadata field
+    for i in start_pos..data.len() {
+        match data[i] {
+            b'<' => depth += 1,
+            b'>' => {
+                depth -= 1;
+                if depth == 0 {
+                    end_pos = i + 1;
+                    break;
+                }
+            }
+            _ => continue,
+        }
     }
     
-    /// Clean forensic markers from document
-    pub fn clean_forensic_markers(document_data: &mut Vec<u8>) -> Result<()> {
-        // Implementation would remove forensic markers here
-        // This is a placeholder showing the structure
-        Ok(())
+    // Remove the metadata field
+    if end_pos > start_pos {
+        data.drain(start_pos..end_pos);
     }
 }
 
@@ -202,4 +280,4 @@ impl Default for ForensicCleaner {
     fn default() -> Self {
         Self::new()
     }
-}
+                     }
