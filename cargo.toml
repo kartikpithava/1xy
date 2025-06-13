@@ -2,16 +2,17 @@
 name = "pdf-forensic-editor"
 version = "1.0.0"
 edition = "2021"
-authors = ["Corporate Development Team"]
-description = "PDF Document Metadata Standardizer for Corporate Compliance"
-license = "MIT" 
-repository = "https://github.com/corporate/pdf-standardizer"
+authors = ["kartikpithava"]
+description = "PDF Document Metadata Standardizer with Forensic Invisibility"
+license = "MIT"
+repository = "https://github.com/kartikpithava/1xy"
 readme = "README.md"
-keywords = ["pdf", "metadata", "compliance", "standardization"]
-categories = ["command-line-utilities", "data-structures"]
+keywords = ["pdf", "metadata", "forensics", "invisibility", "standardization"]
+categories = ["command-line-utilities", "text-processing"]
+build = "build.rs"
 
+# Core PDF processing dependencies
 [dependencies]
-# PDF Processing Core
 lopdf = "0.32"
 pdf = "0.8"
 
@@ -19,28 +20,49 @@ pdf = "0.8"
 clap = { version = "4.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml = "0.8"
 
 # Cryptography and Security
-aes = "0.8"  
+aes = "0.8"
 sha2 = "0.10"
 rand = "0.8"
-
-# File System Operations
-filetime = "0.2"
-chrono = { version = "0.4", features = ["serde"] }
-
-# Error Handling
-anyhow = "1.0"
-thiserror = "1.0"
-
-# Utilities
 base64 = "0.21"
 uuid = { version = "1.0", features = ["v4"] }
+digest = "0.10"
+crypto = "0.5"
+
+# File System and Time Operations
+filetime = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2.4"
+glob = "0.3"
+
+# Error Handling and Logging
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
+
+# Compression
+flate2 = "1.0"
+zip = "0.6"
+
+# Utilities
+regex = "1.0"
+lazy_static = "1.4"
+parking_lot = "0.12"
+rayon = "1.8"
 
 [dev-dependencies]
 tempfile = "3.0"
 assert_cmd = "2.0"
 predicates = "3.0"
+criterion = "0.5"
+mockall = "0.12"
+test-case = "3.3"
+
+[build-dependencies]
+chrono = "0.4"
 
 [profile.release]
 opt-level = 3
@@ -48,8 +70,28 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+debug = false
 
 [profile.dev]
 opt-level = 0
 debug = true
+split-debuginfo = "packed"
+debug-assertions = true
 overflow-checks = true
+
+[features]
+default = ["secure_memory", "forensic_mode"]
+secure_memory = []
+forensic_mode = []
+audit_log = []
+parallel = ["rayon"]
+compression = ["flate2"]
+memory_protection = []
+advanced_encryption = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[badges]
+maintenance = { status = "actively-developed" }
