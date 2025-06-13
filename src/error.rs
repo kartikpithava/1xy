@@ -101,3 +101,37 @@ impl From<serde_json::Error> for ForensicError {
         }
     }
 }
+#[derive(Debug)]
+pub enum ForensicError {
+    FileSystemError {
+        operation: String,
+    },
+    EncryptionError {
+        operation: String,
+    },
+    ConfigError {
+        parameter: String,
+    },
+    VerificationError {
+        message: String,
+    },
+    StructureError {
+        message: String,
+    },
+}
+
+pub type Result<T> = std::result::Result<T, ForensicError>;
+
+impl ForensicError {
+    pub fn verification_error(msg: &str) -> Self {
+        ForensicError::VerificationError {
+            message: msg.to_string()
+        }
+    }
+
+    pub fn structure_error(msg: &str) -> Self {
+        ForensicError::StructureError {
+            message: msg.to_string()
+        }
+    }
+}
