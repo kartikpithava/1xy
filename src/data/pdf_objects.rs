@@ -5,6 +5,7 @@ use crate::{
 use lopdf::{Object, ObjectId, Dictionary, Stream};
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
+use sha2::{Sha256, Digest};
 
 /// Complete PDF object data representation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,7 +108,6 @@ pub enum PrimitiveValue {
     Null,
 }
 
-/// Object metadata and properties
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectMetadata {
     pub size_estimate: usize,
@@ -119,7 +119,6 @@ pub struct ObjectMetadata {
     pub criticality_score: f32,
 }
 
-/// Object relationship mapping
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectRelationships {
     pub references_to: Vec<ObjectId>,
@@ -130,7 +129,6 @@ pub struct ObjectRelationships {
     pub circular_references: bool,
 }
 
-/// Binary content preservation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryContent {
     pub content_hash: String,
@@ -163,13 +161,14 @@ pub struct ModificationRecord {
 }
 
 impl PdfObjectData {
-    /// Create new PDF object data from lopdf Object 
+    /// Create new PDF object data from lopdf Object
     pub fn from_lopdf_object(object_id: ObjectId, object: &Object) -> Result<Self> {
         let object_type = Self::determine_object_type(object)?;
         let content = Self::convert_object_content(object)?;
         let metadata = Self::extract_object_metadata(object)?;
         let relationships = ObjectRelationships::new();
         let binary_data = Self::extract_binary_data(object)?;
+        let timestamp = chrono::Utc::now().to_rfc3339();
         
         Ok(Self {
             object_id,
@@ -178,7 +177,13 @@ impl PdfObjectData {
             metadata,
             relationships,
             binary_data,
-            modification_history: Vec::new(),
+            modification_history: vec![ModificationRecord {
+                timestamp,
+                operation_type: "Creation".to_string(),
+                field_changed: None,
+                old_value: None,
+                new_value: None,
+            }],
         })
     }
 
@@ -189,7 +194,7 @@ impl PdfObjectData {
                     if let Ok(type_name) = type_obj.as_name_str() {
                         return Ok(match type_name {
                             "Catalog" => ObjectType::Catalog,
-                            "Pages" => ObjectType::Pages,
+                            "Pages" => ObjectType::Pages, 
                             "Page" => ObjectType::Page,
                             "Font" => ObjectType::Font,
                             "XObject" => ObjectType::XObject,
@@ -230,11 +235,11 @@ impl PdfObjectData {
                 Ok(ObjectContainer::Stream(stream_content))
             },
             Object::Array(array) => {
-                let mut converted_array = Vec::new();
+                let mut converted = Vec::new();
                 for item in array {
-                    converted_array.push(Self::convert_to_serializable(item)?);
+                    converted.push(Self::convert_to_serializable(item)?);
                 }
-                Ok(ObjectContainer::Array(converted_array))
+                Ok(ObjectContainer::Array(converted))
             },
             _ => {
                 let primitive = Self::convert_to_primitive(object)?;
@@ -260,27 +265,24 @@ impl PdfObjectData {
             entry_order.push(key_str);
         }
         
-        let is_critical = Self::is_critical_dictionary(dict);
-        
         Ok(DictionaryContent {
             entries,
             entry_order,
             contains_metadata,
-            is_critical,
+            is_critical: Self::is_critical_dictionary(dict),
         })
     }
 
     fn convert_stream(stream: &Stream) -> Result<StreamContent> {
         let dictionary = Self::convert_dictionary(&stream.dict)?;
         let raw_content = stream.content.clone();
-        let decoded_content = None; // Would be populated during decoding
         let filter_chain = Self::extract_filter_chain(&stream.dict);
         let content_type = Self::determine_stream_content_type(&stream.dict);
         
         Ok(StreamContent {
             dictionary,
             raw_content,
-            decoded_content,
+            decoded_content: None,
             filter_chain,
             content_type,
         })
@@ -289,19 +291,19 @@ impl PdfObjectData {
     fn convert_to_serializable(object: &Object) -> Result<SerializableObject> {
         match object {
             Object::Dictionary(dict) => {
-                let mut converted_dict = HashMap::new();
+                let mut converted = HashMap::new();
                 for (key, value) in dict.iter() {
                     let key_str = String::from_utf8_lossy(key).to_string();
-                    converted_dict.insert(key_str, Self::convert_to_serializable(value)?);
+                    converted.insert(key_str, Self::convert_to_serializable(value)?);
                 }
-                Ok(SerializableObject::Dictionary(converted_dict))
+                Ok(SerializableObject::Dictionary(converted))
             },
             Object::Array(array) => {
-                let mut converted_array = Vec::new();
+                let mut converted = Vec::new();
                 for item in array {
-                    converted_array.push(Self::convert_to_serializable(item)?);
+                    converted.push(Self::convert_to_serializable(item)?);
                 }
-                Ok(SerializableObject::Array(converted_array))
+                Ok(SerializableObject::Array(converted))
             },
             Object::String(s, _) => Ok(SerializableObject::String(String::from_utf8_lossy(s).to_string())),
             Object::Name(n) => Ok(SerializableObject::Name(String::from_utf8_lossy(n).to_string())),
@@ -327,24 +329,192 @@ impl PdfObjectData {
     }
 
     fn extract_object_metadata(object: &Object) -> Result<ObjectMetadata> {
-        let size_estimate = Self::estimate_object_size(object);
-        let contains_metadata_fields = Self::extract_metadata_fields(object);
-        let is_encrypted = false; // Would be determined by document encryption status
-        let compression_applied = Self::has_compression(object);
-        
         Ok(ObjectMetadata {
-            size_estimate,
-            contains_metadata_fields,
-            is_encrypted,
-            compression_applied,
-            last_modified: None,
+            size_estimate: Self::estimate_object_size(object),
+            contains_metadata_fields: Self::extract_metadata_fields(object),
+            is_encrypted: false,
+            compression_applied: Self::has_compression(object),
+            last_modified: Some(chrono::Utc::now().to_rfc3339()),
             access_count: 0,
             criticality_score: Self::calculate_criticality_score(object),
         })
     }
 
-    // Additional implementation methods follow...
-    // [Continue with all remaining methods from the implementation guide]
+    fn estimate_object_size(object: &Object) -> usize {
+        match object {
+            Object::Stream(stream) => stream.content.len() + 100,
+            Object::String(s, _) => s.len(),
+            Object::Array(array) => array.len() * 10,
+            Object::Dictionary(dict) => dict.len() * 20,
+            _ => 10,
+        }
+    }
+
+    fn extract_metadata_fields(object: &Object) -> HashSet<MetadataField> {
+        let mut fields = HashSet::new();
+        
+        if let Object::Dictionary(dict) = object {
+            let metadata_keys = [
+                (b"Title", MetadataField::Title),
+                (b"Author", MetadataField::Author),
+                (b"Subject", MetadataField::Subject),
+                (b"Keywords", MetadataField::Keywords),
+                (b"Creator", MetadataField::Creator),
+                (b"Producer", MetadataField::Producer),
+                (b"CreationDate", MetadataField::CreationDate),
+                (b"ModDate", MetadataField::ModificationDate),
+                (b"Trapped", MetadataField::Trapped),
+            ];
+            
+            for (key, field) in &metadata_keys {
+                if dict.has(key) {
+                    fields.insert(field.clone());
+                }
+            }
+        }
+        
+        fields
+    }
+
+    fn extract_filter_chain(dict: &Dictionary) -> Vec<String> {
+        let mut filters = Vec::new();
+        
+        if let Ok(filter_obj) = dict.get(b"Filter") {
+            match filter_obj {
+                Object::Name(name) => {
+                    filters.push(String::from_utf8_lossy(name).to_string());
+                },
+                Object::Array(array) => {
+                    for item in array {
+                        if let Ok(name) = item.as_name_str() {
+                            filters.push(name.to_string());
+                        }
+                    }
+                },
+                _ => {},
+            }
+        }
+        
+        filters
+    }
+
+    fn determine_stream_content_type(dict: &Dictionary) -> StreamContentType {
+        if let Ok(subtype) = dict.get(b"Subtype") {
+            if let Ok(subtype_name) = subtype.as_name_str() {
+                return match subtype_name {
+                    "XML" => StreamContentType::XmpMetadata,
+                    "Image" => StreamContentType::Image,
+                    "Form" => StreamContentType::Form,
+                    _ => StreamContentType::Unknown,
+                };
+            }
+        }
+        
+        if let Ok(type_obj) = dict.get(b"Type") {
+            if let Ok(type_name) = type_obj.as_name_str() {
+                return match type_name {
+                    "Metadata" => StreamContentType::XmpMetadata,
+                    "Font" => StreamContentType::Font,
+                    "ColorSpace" => StreamContentType::ColorSpace,
+                    _ => StreamContentType::Unknown,
+                };
+            }
+        }
+        
+        StreamContentType::PageContent
+    }
+
+    fn has_compression(object: &Object) -> bool {
+        if let Object::Stream(stream) = object {
+            return stream.dict.has(b"Filter");
+        }
+        false
+    }
+
+    fn calculate_criticality_score(object: &Object) -> f32 {
+        if let Object::Dictionary(dict) = object {
+            if let Ok(type_obj) = dict.get(b"Type") {
+                if let Ok(type_name) = type_obj.as_name_str() {
+                    return match type_name {
+                        "Catalog" => 1.0,
+                        "Pages" => 0.9,
+                        "Page" => 0.8,
+                        "Info" => 0.7,
+                        "Metadata" => 0.6,
+                        _ => 0.3,
+                    };
+                }
+            }
+        }
+        0.1
+    }
+
+    fn is_metadata_key(key: &str) -> bool {
+        matches!(key, 
+            "Title" | "Author" | "Subject" | "Keywords" | 
+            "Creator" | "Producer" | "CreationDate" | 
+            "ModDate" | "Trapped"
+        )
+    }
+
+    fn is_critical_dictionary(dict: &Dictionary) -> bool {
+        if let Ok(type_obj) = dict.get(b"Type") {
+            if let Ok(type_name) = type_obj.as_name_str() {
+                return matches!(type_name, 
+                    "Catalog" | "Pages" | "Page" | "Info"
+                );
+            }
+        }
+        false
+    }
+
+    fn extract_binary_data(object: &Object) -> Result<Option<BinaryContent>> {
+        if let Object::Stream(stream) = object {
+            if stream.content.len() > 100 && Self::appears_binary(&stream.content) {
+                let content_hash = Self::calculate_content_hash(&stream.content);
+                
+                return Ok(Some(BinaryContent {
+                    content_hash,
+                    original_size: stream.content.len(),
+                    compressed_size: stream.content.len(),
+                    content_data: stream.content.clone(),
+                    compression_method: CompressionMethod::None,
+                    integrity_verified: true,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    fn appears_binary(data: &[u8]) -> bool {
+        if data.len() < 100 {
+            return false;
+        }
+        
+        let non_printable = data.iter()
+            .take(100)
+            .filter(|&&b| b < 32 && b != 9 && b != 10 && b != 13)
+            .count();
+            
+        (non_printable as f64 / 100.0) > 0.1
+    }
+
+    fn calculate_content_hash(content: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        format!("{:x}", hasher.finalize())
+    }
+
+    pub fn record_modification(&mut self, operation_type: String, field_changed: Option<String>, old_value: Option<String>, new_value: Option<String>) {
+        let record = ModificationRecord {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            operation_type,
+            field_changed,
+            old_value,
+            new_value,
+        };
+        self.modification_history.push(record);
+    }
 }
 
 impl ObjectRelationships {
@@ -356,6 +526,28 @@ impl ObjectRelationships {
             child_objects: Vec::new(),
             dependency_level: 0,
             circular_references: false,
+        }
+    }
+
+    pub fn add_reference_to(&mut self, object_id: ObjectId) {
+        if !self.references_to.contains(&object_id) {
+            self.references_to.push(object_id);
+        }
+    }
+
+    pub fn add_referenced_by(&mut self, object_id: ObjectId) {
+        if !self.referenced_by.contains(&object_id) {
+            self.referenced_by.push(object_id);
+        }
+    }
+
+    pub fn set_parent(&mut self, parent_id: ObjectId) {
+        self.parent_object = Some(parent_id);
+    }
+
+    pub fn add_child(&mut self, child_id: ObjectId) {
+        if !self.child_objects.contains(&child_id) {
+            self.child_objects.push(child_id);
         }
     }
 }
@@ -372,4 +564,4 @@ impl Default for ObjectMetadata {
             criticality_score: 0.0,
         }
     }
-  }
+    }
