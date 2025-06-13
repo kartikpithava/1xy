@@ -1,0 +1,329 @@
+use crate::{
+    errors::{ForensicError, Result},
+    types::{MetadataField, MetadataLocation},
+    data::pdf_objects::PdfObjectData,
+};
+use lopdf::ObjectId;
+use serde::{Serialize, Deserialize};
+use std::collections::{HashMap, HashSet};
+
+/// Serializable clone data for PDF reconstruction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableCloneData {
+    pub object_data: HashMap<ObjectId, PdfObjectData>,
+    pub reconstruction_data: ReconstructionData,
+    pub verification_data: VerificationData,
+    pub compression_config: CompressionConfig,
+    pub serialization_format: SerializationFormat,
+    pub clone_timestamp: String,
+    pub clone_integrity_hash: String,
+}
+
+/// Reconstruction data for PDF rebuilding
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconstructionData {
+    pub catalog_id: ObjectId,
+    pub info_id: Option<ObjectId>,
+    pub encryption_id: Option<ObjectId>,
+    pub metadata_id: Option<ObjectId>,
+    pub page_tree_id: ObjectId,
+    pub page_count: usize,
+    pub object_order: Vec<ObjectId>,
+    pub cross_references: HashMap<ObjectId, CrossReferenceData>,
+    pub trailer_data: TrailerData,
+}
+
+/// Verification data for integrity checks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationData {
+    pub object_hashes: HashMap<ObjectId, String>,
+    pub metadata_state: HashMap<MetadataField, MetadataState>,
+    pub structural_integrity: IntegrityData,
+    pub content_signatures: Vec<ContentSignature>,
+    pub verification_timestamp: String,
+}
+
+/// Cross reference entry data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossReferenceData {
+    pub offset: u64,
+    pub generation: u16,
+    pub is_free: bool,
+    pub compressed_in: Option<ObjectId>,
+    pub index_in_stream: Option<usize>,
+}
+
+/// PDF trailer data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrailerData {
+    pub size: usize,
+    pub root_id: ObjectId,
+    pub info_id: Option<ObjectId>,
+    pub encrypt_id: Option<ObjectId>,
+    pub id: Option<Vec<Vec<u8>>>,
+    pub prev_offset: Option<u64>,
+}
+
+/// Integrity verification data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrityData {
+    pub tree_complete: bool,
+    pub references_valid: bool,
+    pub structure_valid: bool,
+    pub metadata_consistent: bool,
+    pub missing_objects: Vec<ObjectId>,
+    pub invalid_references: Vec<(ObjectId, ObjectId)>,
+}
+
+/// Content signature for verification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentSignature {
+    pub object_id: ObjectId,
+    pub signature_type: SignatureType,
+    pub signature_data: Vec<u8>,
+    pub timestamp: String,
+    pub is_valid: bool,
+}
+
+/// Metadata state tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetadataState {
+    pub current_value: Option<String>,
+    pub locations: Vec<MetadataLocation>,
+    pub is_synchronized: bool,
+    pub last_modified: String,
+    pub modification_count: usize,
+}
+
+/// Signature type enumeration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SignatureType {
+    ObjectContent,
+    MetadataField,
+    StructuralElement,
+    CustomSignature(String),
+}
+
+/// Compression configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionConfig {
+    pub enable_compression: bool,
+    pub compression_level: u8,
+    pub stream_compression: bool,
+    pub object_compression: bool,
+    pub minimum_size: usize,
+}
+
+/// Serialization format specification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SerializationFormat {
+    JSON,
+    Binary,
+    Custom(String),
+}
+
+impl SerializableCloneData {
+    pub fn new(objects: HashMap<ObjectId, PdfObjectData>, reconstruction: ReconstructionData) -> Self {
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let mut clone_data = Self {
+            object_data: objects,
+            reconstruction_data: reconstruction,
+            verification_data: VerificationData::new(),
+            compression_config: CompressionConfig::default(),
+            serialization_format: SerializationFormat::JSON,
+            clone_timestamp: timestamp,
+            clone_integrity_hash: String::new(),
+        };
+        clone_data.update_integrity_hash();
+        clone_data
+    }
+
+    pub fn update_integrity_hash(&mut self) {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        
+        // Hash critical components
+        for (id, obj) in &self.object_data {
+            hasher.update(format!("{:?}:{:?}", id, obj.object_type).as_bytes());
+        }
+        
+        hasher.update(self.clone_timestamp.as_bytes());
+        hasher.update(format!("{:?}", self.reconstruction_data.catalog_id).as_bytes());
+        
+        self.clone_integrity_hash = format!("{:x}", hasher.finalize());
+    }
+
+    pub fn verify_integrity(&self) -> Result<bool> {
+        let mut current = self.clone();
+        current.clone_integrity_hash = String::new();
+        current.update_integrity_hash();
+        
+        Ok(current.clone_integrity_hash == self.clone_integrity_hash)
+    }
+
+    pub fn add_object(&mut self, id: ObjectId, data: PdfObjectData) -> Result<()> {
+        self.object_data.insert(id, data);
+        self.update_integrity_hash();
+        Ok(())
+    }
+
+    pub fn update_metadata_state(&mut self, field: MetadataField, value: Option<String>, location: MetadataLocation) -> Result<()> {
+        let state = self.verification_data.metadata_state
+            .entry(field)
+            .or_insert_with(|| MetadataState {
+                current_value: None,
+                locations: Vec::new(),
+                is_synchronized: true,
+                last_modified: chrono::Utc::now().to_rfc3339(),
+                modification_count: 0,
+            });
+        
+        state.current_value = value;
+        if !state.locations.contains(&location) {
+            state.locations.push(location);
+        }
+        state.last_modified = chrono::Utc::now().to_rfc3339();
+        state.modification_count += 1;
+        
+        self.update_integrity_hash();
+        Ok(())
+    }
+}
+
+impl ReconstructionData {
+    pub fn new(catalog_id: ObjectId, page_tree_id: ObjectId) -> Self {
+        Self {
+            catalog_id,
+            info_id: None,
+            encryption_id: None,
+            metadata_id: None,
+            page_tree_id,
+            page_count: 0,
+            object_order: Vec::new(),
+            cross_references: HashMap::new(),
+            trailer_data: TrailerData {
+                size: 0,
+                root_id: catalog_id,
+                info_id: None,
+                encrypt_id: None,
+                id: None,
+                prev_offset: None,
+            },
+        }
+    }
+
+    pub fn add_cross_reference(&mut self, object_id: ObjectId, offset: u64, generation: u16) {
+        self.cross_references.insert(object_id, CrossReferenceData {
+            offset,
+            generation,
+            is_free: false,
+            compressed_in: None,
+            index_in_stream: None,
+        });
+    }
+
+    pub fn set_object_order(&mut self, order: Vec<ObjectId>) {
+        self.object_order = order;
+        self.trailer_data.size = order.len();
+    }
+}
+
+impl VerificationData {
+    pub fn new() -> Self {
+        Self {
+            object_hashes: HashMap::new(),
+            metadata_state: HashMap::new(),
+            structural_integrity: IntegrityData {
+                tree_complete: true,
+                references_valid: true,
+                structure_valid: true,
+                metadata_consistent: true,
+                missing_objects: Vec::new(),
+                invalid_references: Vec::new(),
+            },
+            content_signatures: Vec::new(),
+            verification_timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    pub fn add_object_hash(&mut self, id: ObjectId, content: &[u8]) {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        self.object_hashes.insert(id, format!("{:x}", hasher.finalize()));
+    }
+
+    pub fn verify_object_hash(&self, id: ObjectId, content: &[u8]) -> bool {
+        if let Some(stored_hash) = self.object_hashes.get(&id) {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(content);
+            let current_hash = format!("{:x}", hasher.finalize());
+            current_hash == *stored_hash
+        } else {
+            false
+        }
+    }
+
+    pub fn add_content_signature(&mut self, signature: ContentSignature) {
+        self.content_signatures.push(signature);
+    }
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            enable_compression: true,
+            compression_level: 6,
+            stream_compression: true,
+            object_compression: false,
+            minimum_size: 1024, // 1KB
+        }
+    }
+}
+
+impl ContentSignature {
+    pub fn new(object_id: ObjectId, signature_type: SignatureType) -> Self {
+        Self {
+            object_id,
+            signature_type,
+            signature_data: Vec::new(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            is_valid: false,
+        }
+    }
+
+    pub fn update_signature(&mut self, content: &[u8]) {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        self.signature_data = hasher.finalize().to_vec();
+        self.timestamp = chrono::Utc::now().to_rfc3339();
+        self.is_valid = true;
+    }
+
+    pub fn verify_signature(&self, content: &[u8]) -> bool {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let current_signature = hasher.finalize().to_vec();
+        self.is_valid && current_signature == self.signature_data
+    }
+}
+
+impl Default for SerializableCloneData {
+    fn default() -> Self {
+        let reconstruction_data = ReconstructionData::new(
+            ObjectId(1, 0),  // Default catalog ID
+            ObjectId(2, 0),  // Default page tree ID
+        );
+        
+        Self::new(HashMap::new(), reconstruction_data)
+    }
+}
+
+impl Default for VerificationData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
