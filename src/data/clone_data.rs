@@ -5,6 +5,8 @@ use crate::{
 use lopdf::ObjectId;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
+use sha2::{Sha256, Digest};
+use chrono::Utc;
 
 /// Serializable clone data for complete PDF reconstruction
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,7 +183,7 @@ impl SerializableCloneData {
         let reconstruction_info = Self::create_reconstruction_info(extraction_data)?;
         let verification = Self::create_verification_data(extraction_data)?;
         let format_config = SerializationFormat::default();
-
+        
         Ok(Self {
             metadata,
             objects,
@@ -192,26 +194,26 @@ impl SerializableCloneData {
             format_config,
         })
     }
-
+    
     fn convert_metadata(metadata_map: &crate::types::MetadataMap) -> Result<ClonedMetadata> {
         let mut fields = HashMap::new();
         let mut locations = HashMap::new();
         let mut synchronization_status = HashMap::new();
         let mut original_values = HashMap::new();
-
+        
         for (field, metadata_value) in metadata_map {
             let field_name = field.as_string();
             fields.insert(field_name.clone(), metadata_value.value.clone());
-
+            
             let location_strings: Vec<String> = metadata_value.locations.iter()
                 .map(|loc| Self::location_to_string(loc))
                 .collect();
             locations.insert(field_name.clone(), location_strings);
-
+            
             synchronization_status.insert(field_name.clone(), metadata_value.is_synchronized);
             original_values.insert(field_name, metadata_value.value.clone());
         }
-
+        
         Ok(ClonedMetadata {
             fields,
             locations,
@@ -219,7 +221,7 @@ impl SerializableCloneData {
             original_values,
         })
     }
-
+    
     fn location_to_string(location: &MetadataLocation) -> String {
         match location {
             MetadataLocation::DocInfo => "DocInfo".to_string(),
@@ -230,21 +232,21 @@ impl SerializableCloneData {
             MetadataLocation::CustomLocation(name) => format!("Custom:{}", name),
         }
     }
-
+    
     fn convert_objects(object_data: &HashMap<ObjectId, crate::pdf::ExtractedObjectData>) -> Result<HashMap<String, ClonedObjectData>> {
         let mut objects = HashMap::new();
-
+        
         for (object_id, extracted_object) in object_data {
             let object_id_str = format!("{}_{}", object_id.0, object_id.1);
             let content = Self::convert_object_content(extracted_object)?;
             let relationships = Self::convert_relationships(&extracted_object.references);
-
+            
             let metadata_flags = if extracted_object.is_metadata_container {
                 vec!["metadata_container".to_string()]
             } else {
                 vec![]
             };
-
+            
             let cloned_object = ClonedObjectData {
                 object_id: object_id_str.clone(),
                 object_type: extracted_object.object_type.clone(),
@@ -252,13 +254,13 @@ impl SerializableCloneData {
                 relationships,
                 metadata_flags,
             };
-
+            
             objects.insert(object_id_str, cloned_object);
         }
-
+        
         Ok(objects)
     }
-
+    
     fn convert_object_content(extracted_object: &crate::pdf::ExtractedObjectData) -> Result<ObjectContent> {
         if let Some(ref stream_data) = extracted_object.stream_data {
             let dict = extracted_object.dictionary_data.clone().unwrap_or_default();
@@ -274,7 +276,7 @@ impl SerializableCloneData {
             Ok(ObjectContent::Primitive(SerializableValue::String("Unknown".to_string())))
         }
     }
-
+    
     fn convert_string_map_to_serializable(map: HashMap<String, String>) -> Result<HashMap<String, SerializableValue>> {
         let mut result = HashMap::new();
         for (key, value) in map {
@@ -283,7 +285,7 @@ impl SerializableCloneData {
         }
         Ok(result)
     }
-
+    
     fn string_to_serializable_value(value: &str) -> SerializableValue {
         if value == "null" {
             SerializableValue::Null
@@ -303,12 +305,12 @@ impl SerializableCloneData {
             SerializableValue::String(value.to_string())
         }
     }
-
+    
     fn convert_relationships(references: &[ObjectId]) -> ObjectRelationships {
         let references_to: Vec<String> = references.iter()
             .map(|id| format!("{}_{}", id.0, id.1))
             .collect();
-
+        
         ObjectRelationships {
             references_to,
             referenced_by: Vec::new(),
@@ -316,7 +318,7 @@ impl SerializableCloneData {
             children: Vec::new(),
         }
     }
-
+    
     fn convert_structure(structure_data: &crate::pdf::StructureData) -> Result<DocumentStructure> {
         Ok(DocumentStructure {
             catalog_id: format!("{}_{}", structure_data.catalog_id.0, structure_data.catalog_id.1),
@@ -324,16 +326,16 @@ impl SerializableCloneData {
             info_dict_id: structure_data.info_dict_id.map(|id| format!("{}_{}", id.0, id.1)),
             metadata_stream_id: structure_data.metadata_stream_id.map(|id| format!("{}_{}", id.0, id.1)),
             page_count: structure_data.page_count,
-            object_count: 0, // Can be set to actual objects.len() if desired
+            object_count: 0,
         })
     }
-
+    
     fn convert_binary_content(extraction_data: &crate::pdf::ExtractionData) -> Result<BinaryContentMap> {
         let mut streams = HashMap::new();
         let mut images = HashMap::new();
         let mut fonts = HashMap::new();
         let mut embedded_files = HashMap::new();
-
+        
         for (object_id, content) in &extraction_data.content_streams {
             let content_id = format!("stream_{}_{}", object_id.0, object_id.1);
             let binary_content = BinaryContent {
@@ -345,7 +347,7 @@ impl SerializableCloneData {
             };
             streams.insert(content_id, binary_content);
         }
-
+        
         for (object_id, content) in &extraction_data.binary_objects {
             let content_id = format!("binary_{}_{}", object_id.0, object_id.1);
             let binary_content = BinaryContent {
@@ -355,15 +357,14 @@ impl SerializableCloneData {
                 compression_method: "none".to_string(),
                 content_hash: Self::calculate_hash(content),
             };
-
-            // Categorize by type (simplified)
+            
             if content.len() > 1000 && Self::appears_image(content) {
                 images.insert(content_id, binary_content);
             } else {
                 embedded_files.insert(content_id, binary_content);
             }
         }
-
+        
         Ok(BinaryContentMap {
             streams,
             images,
@@ -371,14 +372,13 @@ impl SerializableCloneData {
             embedded_files,
         })
     }
-
+    
     fn calculate_hash(data: &[u8]) -> String {
-        use sha2::{Sha256, Digest};
         let mut hasher = Sha256::new();
         hasher.update(data);
         format!("{:x}", hasher.finalize())
     }
-
+    
     fn appears_image(data: &[u8]) -> bool {
         data.len() > 10 && (
             data.starts_with(b"\xFF\xD8") || // JPEG
@@ -387,22 +387,22 @@ impl SerializableCloneData {
             data.starts_with(b"GIF89")       // GIF89
         )
     }
-
+    
     fn create_reconstruction_info(extraction_data: &crate::pdf::ExtractionData) -> Result<ReconstructionData> {
         let object_order: Vec<String> = extraction_data.object_data.keys()
             .map(|id| format!("{}_{}", id.0, id.1))
             .collect();
-
+        
         let cross_reference_table: Vec<CrossRefEntry> = extraction_data.object_data.keys()
             .enumerate()
             .map(|(i, id)| CrossRefEntry {
                 object_id: format!("{}_{}", id.0, id.1),
-                offset: (i * 100) as u64, // Simplified offset calculation
+                offset: (i * 100) as u64,
                 generation: id.1,
                 in_use: true,
             })
             .collect();
-
+        
         let trailer_info = TrailerData {
             size: extraction_data.object_data.len() as u64 + 1,
             root_ref: format!("{}_{}", extraction_data.structure_data.catalog_id.0, extraction_data.structure_data.catalog_id.1),
@@ -410,7 +410,7 @@ impl SerializableCloneData {
             id_array: None,
             prev_offset: None,
         };
-
+        
         let mut checksum_verification = HashMap::new();
         for (object_id, object_data) in &extraction_data.object_data {
             let object_id_str = format!("{}_{}", object_id.0, object_id.1);
@@ -418,35 +418,35 @@ impl SerializableCloneData {
                 checksum_verification.insert(object_id_str, Self::calculate_hash(stream_data));
             }
         }
-
+        
         Ok(ReconstructionData {
             object_order,
             cross_reference_table,
             trailer_info,
             pdf_version: extraction_data.structure_data.pdf_version.clone(),
-            file_size_estimate: 0, // Will be calculated during reconstruction
+            file_size_estimate: 0,
             checksum_verification,
         })
     }
-
+    
     fn create_verification_data(extraction_data: &crate::pdf::ExtractionData) -> Result<VerificationData> {
         let mut content_hashes = HashMap::new();
-
+        
         for (object_id, object_data) in &extraction_data.object_data {
             let object_id_str = format!("{}_{}", object_id.0, object_id.1);
             if let Some(ref stream_data) = object_data.stream_data {
                 content_hashes.insert(object_id_str, Self::calculate_hash(stream_data));
             }
         }
-
+        
         let structure_fingerprint = Self::calculate_hash(
             format!("{:?}", extraction_data.structure_data).as_bytes()
         );
-
+        
         let metadata_checksum = Self::calculate_hash(
             format!("{:?}", extraction_data.metadata_map).as_bytes()
         );
-
+        
         let authenticity_markers = vec![
             AuthenticityMarker {
                 marker_type: "timestamp".to_string(),
@@ -455,12 +455,12 @@ impl SerializableCloneData {
                 verification_method: "datetime_parse".to_string(),
             }
         ];
-
+        
         Ok(VerificationData {
             content_hashes,
             structure_fingerprint,
             metadata_checksum,
-            timestamp_verification: chrono::Utc::now().to_rfc3339(),
+            timestamp_verification: Utc::now().to_rfc3339(),
             authenticity_markers,
         })
     }
@@ -487,4 +487,4 @@ impl Default for CompressionConfig {
             chunk_size: 1024 * 1024, // 1MB
         }
     }
-}
+    }
