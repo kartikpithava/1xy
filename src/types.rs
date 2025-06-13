@@ -308,3 +308,24 @@ impl Default for ReconstructionConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MetadataField {
+    Title,
+    Author,
+    Subject,
+    Keywords,
+    Creator,
+    Producer,
+    CreationDate,
+    ModificationDate,
+    Trapped,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MetadataLocation {
+    pub object_id: ObjectId,
+    pub field_type: MetadataField,
+    pub byte_offset: usize,
+}
