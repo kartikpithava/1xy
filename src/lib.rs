@@ -6,7 +6,6 @@ pub mod types;
 pub mod verification;
 pub mod encryption;
 pub mod forensic;
-pub mod integration;
 
 pub mod pdf {
     pub mod parser;
@@ -39,7 +38,6 @@ pub mod utils {
 }
 
 // Re-export commonly used types and functions
-pub use integration::ForensicEditor;
 pub use crate::errors::{ForensicError, Result};
 pub use crate::types::{PdfVersion, MetadataField, EncryptionMethod};
 pub use crate::cli::CliArgs;
