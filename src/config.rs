@@ -118,3 +118,20 @@ impl ForensicConfig {
         ]
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub timestamp_precision: u32,
+}
+
+impl Config {
+    pub const TIMESTAMP_PRECISION: u32 = 1;
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            timestamp_precision: Self::TIMESTAMP_PRECISION,
+        }
+    }
+}
